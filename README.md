@@ -14,7 +14,7 @@ https://user-images.githubusercontent.com/57989149/121805167-8daf0280-cc7c-11eb-
 Input the following values into sniper.json
 
 - provider (use a private node websockets i.e. quicknode)
-- mnemonic
+- privateKey 
 - slippagePercentage (100 to buy at any price impact)
 - approveBeforeTransaction (should be false for fair launches)
 - tokenAmountToApprove (large number)
