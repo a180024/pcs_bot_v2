@@ -10,19 +10,23 @@ require("log-timestamp");
 const redis = require("redis");
 const subscriber = redis.createClient();
 
+/* Constants */
+const addLiquidityETH = "0xf305d719";
+const addLiquidity = "0xe8e33700";
+
+/* Env Variables */
 const buyImmediately = config.buyImmediately;
 const addresses = config.addresses;
-let _targetTokenAddress = addresses.targetToken;
-const mnemonic = config.mnemonic; // First address of this mnemonic must have enough BNB to pay for tx fess
+let targetTokenAddress = addresses.targetToken;
 const slippagePercentage = parseInt(config.slippagePercentage);
 const approveBeforeTransaction = config.approveBeforeTransaction;
 const amountInEther = config.amountInEther;
 const tokenAmountToApprove = config.tokenAmountToApprove;
+const privateKey = config.privateKey;
+
 const provider = new ethers.providers.WebSocketProvider(config.provider);
-const wallet = ethers.Wallet.fromMnemonic(mnemonic);
+const wallet = new ethers.Wallet(privateKey);
 const account = wallet.connect(provider);
-const methodID = "0xf305d719"; // Pancakeswap Router V2: AddLiquidityEth
-const methodID2 = "0xe8e33700"; // Pancakeswap Router V2: AddLiquidity
 
 let counter = 0;
 var targetToken;
@@ -30,10 +34,10 @@ var targetToken;
 subscriber.on("message", function (channel, message) {
   spinner.succeed(`Contract address added: ${message}`);
   spinner.start();
-  if (buyImmediately && _targetTokenAddress === "") {
-    _targetTokenAddress = message;
+  if (buyImmediately && targetTokenAddress === "") {
+    targetTokenAddress = message;
     targetToken = new ethers.Contract(
-      _targetTokenAddress,
+      targetTokenAddress,
       ["function approve(address spender, uint amount) public returns(bool)"],
       account
     );
@@ -109,7 +113,7 @@ const wbnb = new ethers.Contract(
   account
 );
 
-if (_targetTokenAddress !== "") {
+if (targetTokenAddress !== "") {
   targetToken = new ethers.Contract(
     addresses.targetToken,
     ["function approve(address spender, uint amount) public returns(bool)"],
@@ -152,12 +156,12 @@ const approveTargetTokenTransaction = async () => {
 };
 
 const buyToken = async () => {
-  spinner.warn(`Buying token ${_targetTokenAddress}`);
+  spinner.warn(`Buying token ${targetTokenAddress}`);
   spinner.start();
   const amountIn = ethers.utils.parseUnits(amountInEther, "ether");
   const amounts = await router.getAmountsOut(amountIn, [
     addresses.WBNB,
-    _targetTokenAddress,
+    targetTokenAddress,
   ]);
   const amountOutMin = ethers.BigNumber.from(100 - slippagePercentage)
     .mul(amounts[1])
@@ -166,7 +170,7 @@ const buyToken = async () => {
   const tx = await router.swapExactTokensForTokens(
     amountIn,
     amountOutMin,
-    [addresses.WBNB, _targetTokenAddress],
+    [addresses.WBNB, targetTokenAddress],
     addresses.recipient,
     Date.now() + 1000 * 60 * 10, //10 minutes
     transactionOptions
@@ -180,34 +184,41 @@ const buyToken = async () => {
 };
 
 const init = async () => {
-  spinner.succeed(`Scanned: ${counter} times`);
-  counter = counter + 1;
-  const pairAddress = await factory.getPair(
-    addresses.WBNB,
-    _targetTokenAddress
-  );
-  if (pairAddress !== null && pairAddress !== undefined) {
-    if (pairAddress.toString().indexOf("0x0000000000000") > -1) {
-      console.log(
-        chalk.red(`pairAddress ${pairAddress} not detected. Auto restart`)
-      );
-      return await init();
-    }
-  }
-  const pairBNBValue = await wbnb.balanceOf(pairAddress);
-  const jmlBNB = ethers.utils.formatEther(pairBNBValue);
+  const _targetTokenAddress = targetTokenAddress.toLowerCase().substring(2);
+  provider.on("pending", (tx) => {
+    counter = counter + 1;
+    spinner.text = `Scanned ${counter} transactions.`;
 
-  if (jmlBNB > 0) {
-    spinner.succeed(`Found ${jmlBNB}BNB liquidity in token`);
-    spinner.start();
-    await buyToken();
-    process.exit(0);
-  } else {
-    return await init();
-  }
+    provider.getTransaction(tx).then(async function (transaction) {
+      let targetAddressFound = false;
+
+      if (
+        (transaction != null &&
+          transaction["data"].includes(addLiquidity) &&
+          transaction["data"].includes(_targetTokenAddress)) ||
+        (transaction != null &&
+          transaction["data"].includes(addLiquidityETH) &&
+          transaction["data"].includes(_targetTokenAddress))
+      ) {
+        targetAddressFound = true;
+      }
+
+      if (targetAddressFound) {
+        spinner.succeed(
+          `Found a liquidity in token at transaction ${transaction.hash}`
+        );
+        if (approveBeforeTransaction) {
+          await approveTransaction();
+        }
+        spinner.start();
+        await buyToken();
+        process.exit(0);
+      }
+    });
+  });
 };
 
-if (_targetTokenAddress !== "") {
+if (targetTokenAddress !== "") {
   if (buyImmediately) {
     if (approveBeforeTransaction) {
       approveTransaction().then(() => {
